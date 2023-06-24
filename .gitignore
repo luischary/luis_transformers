@@ -4,3 +4,6 @@ data/datatokens
 data/tokenized_datasets
 flash
 lightning_logs
+.vscode
+__pycache__
+**/__pycache__

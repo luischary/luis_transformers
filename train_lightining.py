@@ -208,7 +208,7 @@ if __name__ == "__main__":
         default_root_dir="modelos_treinados/encoders/general/" + model_name,
         gradient_clip_algorithm="norm",
         gradient_clip_val=1.0,
-        strategy="deepspeed_stage_2",
+        # strategy="deepspeed_stage_2_offload",
         # detect_anomaly=True,
         # strategy=DeepSpeedStrategy(
         #     offload_optimizer=True, allgather_bucket_size=5e8, reduce_bucket_size=5e8
