@@ -1,0 +1,6 @@
+venv
+modelos_treinados
+data/datatokens
+data.tokenized_datasets
+flash
+lightning_logs
