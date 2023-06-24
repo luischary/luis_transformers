@@ -5,7 +5,7 @@ data/tokenized_datasets
 flash
 lightning_logs
 .vscode
+__pycache__/
 __pycache__
-**/__pycache__
-*.csv
-*.pq
+data/*.csv
+data/*.pq
