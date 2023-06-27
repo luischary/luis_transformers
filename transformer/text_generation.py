@@ -64,11 +64,16 @@ class LMPipeline:
             1,
         ),
         device=torch.device("cpu"),
+        cross_attention_tokens: torch.Tensor = None,
     ):
-        logits = model(
+        decoder_input = (
             torch.Tensor(tokenized_input).type(torch.int).unsqueeze(0).to(device)
         )
-        last = logits[-1, :].reshape((-1,))
+        if cross_attention_tokens is not None:
+            logits = model.get_logits_next_token(decoder_input, cross_attention_tokens)
+        else:
+            logits = model.get_logits_next_token(decoder_input)
+        last = logits.reshape((-1,))
         last = last / (temperature * repetition_penalizer)
         if num_beams > 1:
             v, beam_top_indices = torch.topk(last, k=top_k, sorted=False, largest=True)
@@ -105,6 +110,7 @@ class LMPipeline:
         num_breams: int = 1,
         repetition_penalty: float = 1,
         device=torch.device("cpu"),
+        cross_attention_tokens: torch.Tensor = None,
     ):
         tokenized = [self.sos_token] + self.tokenizer.tokenize_text(
             input_text, padding=False, truncation=False
@@ -132,6 +138,7 @@ class LMPipeline:
                     num_beams=num_breams,
                     repetition_penalizer=current_text.get_repetition_penalizer(),
                     device=device,
+                    cross_attention_tokens=cross_attention_tokens,
                 )
 
             for new_token, token_logprob in zip(chosen, logprob):
@@ -183,6 +190,7 @@ class LMPipeline:
         temperature: float = 1.0,
         repetition_penalty: float = 1.0,
         device=torch.device("cpu"),
+        cross_attention_tokens: torch.Tensor = None,
     ):
         tokenized = [self.sos_token] + self.tokenizer.tokenize_text(
             input_text, padding=False, truncation=False
@@ -192,7 +200,7 @@ class LMPipeline:
         )
 
         for i in range(max_tokens):
-            pre_logits = model.decoder(
+            decoder_input = (
                 torch.Tensor(
                     generated_text.get_tokens_for_decoder(
                         decoder_max_len=decoder_max_len
@@ -202,7 +210,13 @@ class LMPipeline:
                 .unsqueeze(0)
                 .to(device)
             )
-            last = model.lm_head(pre_logits[:, -1, :]).reshape((-1,))
+            if cross_attention_tokens is not None:
+                logits = model.get_logits_next_token(
+                    decoder_input, cross_attention_tokens
+                )
+            else:
+                logits = model.get_logits_next_token(decoder_input)
+            last = logits.reshape((-1,))
             probas = nn.functional.softmax(
                 last / (temperature * generated_text.get_repetition_penalizer()), dim=0
             )

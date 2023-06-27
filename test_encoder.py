@@ -55,14 +55,17 @@ if __name__ == "__main__":
 
     modelo.to(device)
     modelo.eval()
+    # modelo.half()
 
-    input_text = (
-        "Dados os pedidos e os autos fornecidos, julgo a ação<mask>a favor do autor."
-    )
+    input_text = "Claramente o maior desafio de educação em paises de terceiro mundo é<mask><mask>."
     pipe = MLMPipeline(
         mask_token_id=3, tokenizer=tokenizer, model=modelo, sos_token=1, eos_token=2
     )
     resposta = pipe.predict_mask(
-        input_text, device, top_k=5, pad_input=True, padding=False
+        input_text,
+        device,
+        top_k=5,
+        pad_input=True,
+        padding=False,
     )
     pipe.print_pretty(input_text, *resposta)

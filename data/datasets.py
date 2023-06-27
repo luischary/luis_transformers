@@ -326,32 +326,25 @@ class HBARTDataset(Dataset):
         batches = []
         batch_index = 0
         cur_batch_size = 0
-        current_bin = self.min_len
+        current_bin = self.tokens_dataset.token_bin.min()
         max_batch_size = self.get_max_batch_size(current_bin)
         for _, row in self.tokens_dataset.iterrows():
             token_bin = row.token_bin
 
-            if token_bin == current_bin:
-                # adiciona no batch
-                batches.append(batch_index)
-                cur_batch_size += 1
-            else:
-                # significa que eh um novo batch
-                batch_index += 1
-                current_bin = token_bin
-                max_batch_size = self.get_max_batch_size(current_bin)
-                # ja adiciona no novo batch
-                batches.append(batch_index)
-                cur_batch_size = 1
-
             # ja finalizamos o batch?
-            if cur_batch_size == max_batch_size:
+            if cur_batch_size == max_batch_size or current_bin != token_bin:
                 # vamos para um novo
                 batch_index += 1
                 cur_batch_size = 0
+                current_bin = token_bin
+                max_batch_size = self.get_max_batch_size(current_bin)
+
+            # adiciona no batch
+            batches.append(batch_index)
+            cur_batch_size += 1
 
         self.tokens_dataset["batch_index"] = batches
-        self.num_batches = len(batches)
+        self.num_batches = batches[-1]
 
     def get_max_batch_size(self, token_len):
         max_batch_size = None
@@ -506,18 +499,6 @@ class VariableLenEncoderMLMDataset(Dataset):
             batches.append(batch_index)
             cur_batch_size += 1
 
-        # precisa garantir que os batches incrementem de 1 em 1
-        # o codigo anterior pode gerar incrementos de 2 que precisam ser arrumados
-        # batches_arrumados = []
-        # ultimo_index = None
-        # for batch_index in batches:
-        #     if ultimo_index is not None:
-        #         if ultimo_index != batch_index:  # soma 1
-        #             ultimo_index += 1
-        #     else:
-        #         ultimo_index = 0
-        #     batches_arrumados.append(ultimo_index)
-
         self.tokens_dataset["batch_index"] = batches
         self.num_batches = batches[-1]
 
@@ -608,3 +589,159 @@ class VariableLenEncoderMLMDataset(Dataset):
             else:
                 replace_tokens[i] = original_tokens[i]
         return torch.from_numpy(replace_tokens).type(torch.int)
+
+
+class VariableLenEncoderDecoderReconstruction(Dataset):
+    def __init__(
+        self,
+        tokens_metadata: str,
+        vocab_size: int,
+        max_len: int = 32256,
+        min_len: int = 512,
+        batches: Dict = {512: 8, 1024: 4, 2048: 2, 4096: 1},
+        limit: int = None,
+        begin_sentence_token: int = 1,
+        end_of_sentence_token: int = 0,
+        pad_token_id: int = 2,
+        segment_size: int = 32,
+        mask_prob: float = 0.15,
+        mask_token_id: int = 3,
+        special_tokens: List[int] = [],
+    ):
+        super().__init__()
+
+        self.max_len = max_len
+        self.min_len = min_len
+        self.segment_size = segment_size
+        self.begin_sentence_token = begin_sentence_token
+        self.end_of_sentence_token = end_of_sentence_token
+        self.pad_token_id = pad_token_id
+        self.batches_config = batches
+        self.num_batches = None
+        self.mask_prob = mask_prob
+        self.special_tokens = special_tokens
+        self.mask_token_id = mask_token_id
+        self.vocab_size = vocab_size
+
+        self.tokens_dataset = pd.read_parquet(tokens_metadata)
+        # ja filtra por min len e max
+        # self.tokens_dataset = self.tokens_dataset[
+        #     (self.tokens_dataset.num_tokens <= max_len)
+        #     & (self.tokens_dataset.num_tokens >= min_len)
+        # ].reset_index(drop=True)
+        self.tokens_dataset = self.tokens_dataset[
+            self.tokens_dataset.num_tokens >= min_len
+        ].reset_index(drop=True)
+
+        if limit is not None:
+            self.tokens_dataset = self.tokens_dataset.iloc[:limit]
+
+        # cria o token bin para este caso especifico
+        token_bins = [
+            (segment_size - 1) * i for i in range(max_len // segment_size + 1)
+        ]
+        my_token_bins = []
+        for _, row in self.tokens_dataset.iterrows():
+            num_tokens = row.num_tokens
+            bin_index = 0
+            while num_tokens > token_bins[bin_index]:
+                bin_index += 1
+                if bin_index >= len(token_bins):
+                    bin_index = len(token_bins) - 1
+                    break
+            my_token_bins.append(token_bins[bin_index])
+        self.tokens_dataset["token_bin"] = my_token_bins
+
+        # seta os batches
+        self.prepare_batches()
+
+    def prepare_batches(self):
+        # ordena o dataset
+        self.tokens_dataset = self.tokens_dataset.sort_values(
+            ["token_bin"], ascending=True
+        ).reset_index(drop=True)
+
+        batches = []
+        batch_index = 0
+        cur_batch_size = 0
+        current_bin = self.tokens_dataset.token_bin.min()
+        max_batch_size = self.get_max_batch_size(current_bin)
+        for _, row in self.tokens_dataset.iterrows():
+            token_bin = row.token_bin
+
+            # ja finalizamos o batch?
+            if cur_batch_size == max_batch_size or current_bin != token_bin:
+                # vamos para um novo
+                batch_index += 1
+                cur_batch_size = 0
+                current_bin = token_bin
+                max_batch_size = self.get_max_batch_size(current_bin)
+
+            # adiciona no batch
+            batches.append(batch_index)
+            cur_batch_size += 1
+
+        self.tokens_dataset["batch_index"] = batches
+        self.num_batches = batches[-1]
+
+    def get_max_batch_size(self, token_len):
+        max_batch_size = None
+        for len, max_batch in self.batches_config.items():
+            max_batch_size = max_batch
+            if token_len <= len:
+                break
+
+        return max_batch_size
+
+    def __len__(self):
+        return self.num_batches
+
+    def __getitem__(self, index):
+        batch_info = self.tokens_dataset[
+            self.tokens_dataset.batch_index == index
+        ].reset_index(drop=True)
+        tokenized_tensors_encoder = []
+        tokenized_tensors_decoder = []
+        tokenized_tensors_labels = []
+        for _, row in batch_info.iterrows():
+            token_bin = row.token_bin
+            token_ref = row.tokens_ref
+            tokenized = None
+            with open(token_ref, "rb") as file:
+                tokenized = pickle.load(file)
+            # decoder nao precisa de padding
+            # label nao precisa de padding
+            # for the decoder we must have a maximum length of max_len + 1 for shifted values
+            # its ok to pad but the padding must come from left ro rigth
+            # NESTE CASO ESPECIFICO VAMOS FAZER O PADDING DO ENCODER A ESQUERDA E NAO A DIREITA
+            # para que os ultimos embeddings tenham significado e nao fiquem vazios
+            # (no caso de ter que jogar novos embeddings gerados para o encoder em tempo de execucao)
+            # tamanho tem que ser multiplo do segment size - 1
+            desired_len_encoder = token_bin
+            if len(tokenized) < desired_len_encoder:
+                diff = (desired_len_encoder) - len(tokenized)
+                tokenized = [self.pad_token_id for _ in range(diff)] + tokenized
+            elif len(tokenized) > desired_len_encoder:
+                # pega um pedaco aleatorio dentre os possiveis
+                possible_starts = len(tokenized) - desired_len_encoder
+                random_start = np.random.randint(0, possible_starts)
+                tokenized = tokenized[random_start : random_start + desired_len_encoder]
+
+            # transform into tensor
+            tokenized = torch.from_numpy(np.array(tokenized))
+            tokenized_tensors_encoder.append(tokenized)
+
+            # agora as coisas relacionadas ao decoder
+            tokenized_tensors_decoder.append(tokenized[0:-1])
+            tokenized_tensors_labels.append(tokenized[1:])
+
+        # vira tudo uma coisa so
+        tokenized_tensors_encoder = torch.stack(tokenized_tensors_encoder, dim=0)
+        tokenized_tensors_decoder = torch.stack(tokenized_tensors_decoder, dim=0)
+        tokenized_tensors_labels = torch.stack(tokenized_tensors_labels, dim=0)
+
+        return (
+            tokenized_tensors_encoder,
+            tokenized_tensors_decoder,
+            tokenized_tensors_labels,
+        )
