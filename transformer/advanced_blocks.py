@@ -5,7 +5,6 @@ import numpy as np
 from einops import rearrange
 from rotary_embedding_torch import RotaryEmbedding
 from flash_attn.flash_attention import FlashAttention
-from flash_attn.flash_attn_interface import flash_attn_unpadded_kvpacked_func
 
 from transformer.transformer_blocks import FeedFowardBlock
 
@@ -325,6 +324,105 @@ class RotaryMHFlashCrossAttention(nn.Module):
         return qkv, cu_seqlens, max_s
 
 
+class RotaryCrossAttention(nn.Module):
+    def __init__(
+        self,
+        rotary: RotaryEmbedding,
+        num_heads: int = 8,
+        embed_dim: int = 512,
+        dropout=0.1,
+    ):
+        super().__init__()
+
+        self.num_heads = num_heads
+        self.embed_dim = embed_dim
+        self.dropout = dropout
+
+        assert (
+            embed_dim % num_heads == 0
+        ), "The number of dimensions must be divible by the number of heads"
+
+        self.head_dim = embed_dim // num_heads
+        self.out_projection = nn.Linear(self.embed_dim, self.embed_dim)
+
+        self.proj_q = nn.Linear(self.embed_dim, self.embed_dim)
+        self.proj_k = nn.Linear(self.embed_dim, self.embed_dim)
+        self.proj_v = nn.Linear(self.embed_dim, self.embed_dim)
+
+        self.dropout_attention = nn.Dropout(dropout)
+        self.dropout_projection = nn.Dropout(dropout)
+        self.rotary = rotary
+
+    def QKVattention(self, q, k, v, mask=None):
+        b, heads, len_tokens, embed_dim = q.shape
+        k_t = torch.transpose(k, -1, -2)
+        # shapes for q, k, v are [B, HEADS, SEQ, HEAD_DIM]
+        # for K_t we have [B, HEADS, HEAD_DIM, SEQ]
+        qk = torch.einsum("bhsd, bhde -> bhse", q, k_t)
+        # qk = torch.bmm(q, k_t)
+        # shape of qk is [B, SEQ, SEQ]
+        if mask is not None:
+            qk = qk + mask
+        attention = torch.softmax(qk / np.sqrt(embed_dim), dim=-1)
+        attention = self.dropout_attention(attention)
+        # [batch, heads, decoder_len, head_dim] * [batch, heasd, encoder_len, head_dim]
+        full_attention = torch.einsum("bhde, bher -> bhdr", attention, v)
+        return self.dropout_projection(full_attention)
+
+    def reshape_for_attention(self, x):
+        B, L, E = x.shape
+        # shape x = [batch, len, embed_dim]
+        # virou [batch, heads, len, head_dim]
+        x = x.contiguous().view((B, L, self.num_heads, self.head_dim)).transpose(1, 2)
+        return x
+
+    def reshape_from_attention(self, x):
+        B, H, L, HD = x.shape
+        # virou [batch, len, heads, head_dim]
+        x = x.transpose(1, 2)
+        x = x.contiguous().view(B, L, self.embed_dim)
+        # virou [batch, len, embed_dim]
+        return x
+
+    def pad_sequence(self, t: torch.Tensor, len: int, padding_value: int = 0):
+        B, H, L, D = t.shape
+        if L < len:
+            len_diff = len - L
+            padding = torch.ones((B, H, len_diff, D)) * padding_value
+            padded = torch.cat([t, padding.to(t.device)], dim=-2)
+            # padding completo
+            padding = torch.cat([torch.ones_like(t), padding.to(t.device)], dim=-2)
+        else:
+            padded = t
+            padding = torch.ones_like(t)
+        return padded, padding
+
+    def forward(self, x_decoder: torch.Tensor, x_encoder: torch.Tensor):
+        q = self.reshape_for_attention(self.proj_q(x_decoder))
+        k = self.reshape_for_attention(self.proj_k(x_encoder))
+        v = self.reshape_for_attention(self.proj_v(x_encoder))
+
+        # rotary embeddings
+        if self.rotary.use_xpos:
+            # se tiverem comprimentos diferentes precisamos fazer um padding
+            max_len = max(q.shape[-2], k.shape[-2])
+            q_padded, _ = self.pad_sequence(q, max_len)
+            k_padded, padding_k = self.pad_sequence(k, max_len)
+            v_padded, _ = self.pad_sequence(v, max_len)
+            q, k = self.rotary.rotate_queries_and_keys(q_padded, k_padded, seq_dim=-2)
+        else:
+            q = self.rotary.rotate_queries_or_keys(q)
+            k = self.rotary.rotate_queries_or_keys(k)
+
+        # atencao
+        x_att = self.QKVattention(q=q, k=k, v=v)
+
+        # projecao final
+        x_att = self.reshape_from_attention(x_att)
+        x_att = self.out_projection(x_att)
+        return x_att
+
+
 class RotaryFlashDecoderBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, hidden_size, rotary, dropout: int = 0.1):
         super().__init__()
@@ -352,7 +450,15 @@ class RotaryFlashDecoderBlock(nn.Module):
 
 
 class RotaryFlashCrossDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, num_heads, hidden_size, rotary, dropout: int = 0.1):
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        hidden_size,
+        rotary,
+        dropout: int = 0.1,
+        use_cross_flash: bool = True,
+    ):
         super().__init__()
 
         self.attention = RotaryMultiHeadFlashAttention(
@@ -362,13 +468,19 @@ class RotaryFlashCrossDecoderBlock(nn.Module):
             dropout=dropout,
             causal=True,
         )
-        self.cross_attention = RotaryMHFlashCrossAttention(
-            rotary=rotary,
-            num_heads=num_heads,
-            embed_dim=embed_dim,
-            dropout=dropout,
-            causal=False,
-        )
+        # opcao de usar cross attention com flash ou nao
+        if use_cross_flash:
+            self.cross_attention = RotaryMHFlashCrossAttention(
+                rotary=rotary,
+                num_heads=num_heads,
+                embed_dim=embed_dim,
+                dropout=dropout,
+                causal=False,
+            )
+        else:
+            self.cross_attention = RotaryCrossAttention(
+                rotary=rotary, num_heads=num_heads, embed_dim=embed_dim, dropout=dropout
+            )
         self.feedforward = FeedFowardBlock(
             embed_dim=embed_dim, hidden_size=hidden_size, dropout=dropout
         )

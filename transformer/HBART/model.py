@@ -19,12 +19,14 @@ class GPTCross(nn.Module):
         num_layers: int,
         hidden_size: int,
         dropout: float = 0.1,
+        flash_cross_attention: bool = True,
+        use_xpos: bool = True,
     ):
         super().__init__()
 
         self.num_heads = num_heads
         self.embedding = nn.Embedding(vocab_size, embedding_dim=embed_dim)
-        self.rotary = RotaryEmbedding(embed_dim // num_heads, use_xpos=True)
+        self.rotary = RotaryEmbedding(embed_dim // num_heads, use_xpos=use_xpos)
 
         self.decoder_blocks = nn.ModuleList()
         for _ in range(num_layers):
@@ -35,6 +37,7 @@ class GPTCross(nn.Module):
                     hidden_size=hidden_size,
                     dropout=dropout,
                     rotary=self.rotary,
+                    use_cross_flash=flash_cross_attention,
                 )
             )
 
@@ -190,6 +193,7 @@ class HBARTLM(nn.Module):
                 device=device,
                 decoder_max_len=decoder_max_len,
                 cross_attention_tokens=cross_attention_tokens,
+                insert_bos_decoder=True,
             )
 
         return generated_text

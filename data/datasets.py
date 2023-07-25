@@ -723,8 +723,9 @@ class VariableLenEncoderDecoderReconstruction(Dataset):
                 tokenized = [self.pad_token_id for _ in range(diff)] + tokenized
             elif len(tokenized) > desired_len_encoder:
                 # pega um pedaco aleatorio dentre os possiveis
-                possible_starts = len(tokenized) - desired_len_encoder
-                random_start = np.random.randint(0, possible_starts)
+                # possible_starts = len(tokenized) - desired_len_encoder
+                # random_start = np.random.randint(0, possible_starts)
+                random_start = 0
                 tokenized = tokenized[random_start : random_start + desired_len_encoder]
 
             # transform into tensor

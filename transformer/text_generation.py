@@ -111,10 +111,14 @@ class LMPipeline:
         repetition_penalty: float = 1,
         device=torch.device("cpu"),
         cross_attention_tokens: torch.Tensor = None,
+        insert_bos_decoder: bool = True,
     ):
-        tokenized = [self.sos_token] + self.tokenizer.tokenize_text(
+        tokenized = self.tokenizer.tokenize_text(
             input_text, padding=False, truncation=False
         )
+        if insert_bos_decoder:
+            tokenized = [self.sos_token] + tokenized
+
         generated_text = GeneratedText(
             current_tokens=tokenized, vocab_size=self.vocab_size, device=device
         )

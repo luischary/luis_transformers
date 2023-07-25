@@ -116,11 +116,11 @@ def get_tokens_stats(datatokens_folder: str):
         "parent_folder": [],
         "doc_id": [],
         "num_tokens": [],
-        "token_bin": [],
+        # "token_bin": [],
         "tokens_ref": [],
     }
-    token_bins = [(segment_size - 1) * i + 512 for i in range(1026)]
-    token_bins = [128, 256] + token_bins
+    # token_bins = [(segment_size - 1) * i + 512 for i in range(1026)]
+    # token_bins = [128, 256] + token_bins
 
     for file in tqdm(Path(datatokens_folder).glob("**/*.pkl")):
         with open(file, "rb") as arquivo:
@@ -129,20 +129,20 @@ def get_tokens_stats(datatokens_folder: str):
         dados["doc_id"].append(file.stem)
         dados["num_tokens"].append(len(tokens))
         dados["parent_folder"].append(file.parent.stem)
-        dados["tokens_ref"].append(file.as_posix())
+        dados["tokens_ref"].append(str(file.relative_to(Path("./"))))
 
-        bin_index = 0
-        while len(tokens) > token_bins[bin_index]:
-            bin_index += 1
-            if bin_index >= len(token_bins):
-                bin_index = len(token_bins) - 1
-                break
-        dados["token_bin"].append(token_bins[bin_index])
+        # bin_index = 0
+        # while len(tokens) > token_bins[bin_index]:
+        #     bin_index += 1
+        #     if bin_index >= len(token_bins):
+        #         bin_index = len(token_bins) - 1
+        #         break
+        # dados["token_bin"].append(token_bins[bin_index])
 
     df = pd.DataFrame(dados)
     print(df)
     print(df.num_tokens.describe())
-    df.to_csv("data/infos_tokens.csv", sep=";", encoding="utf8")
+    # df.to_csv("data/infos_tokens.csv", sep=";", encoding="utf8")
     df.to_parquet("data/infos_tokens.pq")
 
 
